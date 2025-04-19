@@ -130,7 +130,7 @@ void getZigBeeCoords(int* x_int, int* y_int, int* match_byte_int){
   if(!Serial1.available()){
     Serial.println("error ZigBee");
   }
-  // Receive data from the Xbee module and print to serial monitor
+  // Receive data from the Xbee module one char at a time and print to serial monitor
   while (Serial1.available() && count < 14)
   {
     char incoming = Serial1.read();
