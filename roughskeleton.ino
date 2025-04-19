@@ -2,6 +2,7 @@
 #include <DualMAX14870MotorShield.h>
 #include <Servo.h>
 #include <Adafruit_BNO055.h>
+#include <math.h>
 
 Pixy2 pixy;
 DualMAX14870MotorShield motors;
@@ -14,6 +15,14 @@ enum State {
   FIND_GOAL,
   SHOOT
 };
+
+struct Coordinate {
+  int x; // cm
+  int y; // cm
+}
+
+const Coordinate GOAL_CENTER_COORD = {150, 500}; // TODO: I'm pretty sure the zigbee returns x-y coordinates in cm. Fill these in appropriately
+const int GOAL_WIDTH = 100; // in cm - TODO: Change this accordingly
 
 State currentState = SPIN_TO_FIND_PUCK;
 unsigned long lastSeenTime = 0;
@@ -112,6 +121,32 @@ void shootPuck() {
   delay(500);
 }
 
+// Converts radians to degrees
+double radToDeg(double rad) {
+  return rad * 180.0 / PI;
+}
+
+// current - the current x,y coordinate of the robot
+// goal - this will be GOAL_CENTER_COORD
+// goal_width - this will be GOAL_WIDTH (the center x,y coord for the goal)
+// offset_pct - 0 if aiming to center of goal, +1 if aiming towards right post, -1 if aiming towards left post, any value in between for more granular control
+void calcShootAngleToGoal(Coordinate current, Coordinate goal, int goal_width, double offset_pct) {
+  // Clamp offset to range [-1, 1] just in case
+  if (offset_pct < -1.0) offset_pct = -1.0;
+  if (offset_pct > 1.0) offset_pct = 1.0;
+
+  // Compute x-offset within the goal
+  double xOffset = (goal_width / 2.0) * offset_pct;
+
+  // Compute direction vector to the desired target point on the goal
+  double dx = (goal.x + xOffset) - current.x;
+  double dy = goal.y - current.y;
+
+  // Angle off y-axis (in radians), then converted to degrees
+  double angleRad = atan2(dx, dy);
+  return radToDeg(angleRad);
+}
+
 // reads yaw
 double readYaw() {
   /* Get a new sensor event */ 
@@ -122,7 +157,7 @@ double readYaw() {
 }
 
 //ZigBee check coordinates 
-void getZigBeeCoords(int* x_int, int* y_int, int* match_byte_int){
+Coordinate getZigBeeCoords(int* match_byte_int){
   // Send data from the serial monitor to Xbee module
   Serial1.print('?');
   String data = "";
@@ -141,12 +176,13 @@ void getZigBeeCoords(int* x_int, int* y_int, int* match_byte_int){
   }
   if(count == 14) { // this is a dumb redundancy check
     String x = data.substring(7,10);
-    *x_int = x.toInt();
-    //Serial.println("X: " + x);
+    // Serial.println("X: " + x);
     String y = data.substring(11);
-    *y_int = y.toInt();
-    //Serial.println("Y: " + y);
+    // Serial.println("Y: " + y);
     String match_byte = data.substring(0, 1);
+    // Serial.println("Match Byte: " + match_byte);
+
     *match_byte_int = match_byte.toInt();
+    Coordinate coord = {x.toInt(), y.toInt()};
   }
 }
