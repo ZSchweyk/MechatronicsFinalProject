@@ -130,7 +130,7 @@ double radToDeg(double rad) {
 // goal - this will be GOAL_CENTER_COORD
 // goal_width - this will be GOAL_WIDTH (the center x,y coord for the goal)
 // offset_pct - 0 if aiming to center of goal, +1 if aiming towards right post, -1 if aiming towards left post, any value in between for more granular control
-void calcShootAngleToGoal(Coordinate current, Coordinate goal, int goal_width, double offset_pct) {
+double calcShootAngleToGoal(Coordinate current, Coordinate goal, int goal_width, double offset_pct) {
   // Clamp offset to range [-1, 1] just in case
   if (offset_pct < -1.0) offset_pct = -1.0;
   if (offset_pct > 1.0) offset_pct = 1.0;
@@ -145,6 +145,14 @@ void calcShootAngleToGoal(Coordinate current, Coordinate goal, int goal_width, d
   // Angle off y-axis (in radians), then converted to degrees
   double angleRad = atan2(dx, dy);
   return radToDeg(angleRad);
+}
+
+void aim(double shoot_angle) {
+  // pivot cw or ccw until readYaw() is shoot_angle
+  // this should be easy, just send commands to both motors to rotate
+  // while (readYaw() != shoot_angle) {
+  //    // rotate cw/ccw
+  // }
 }
 
 // reads yaw
