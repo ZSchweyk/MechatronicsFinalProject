@@ -1,10 +1,12 @@
 #include <Pixy2.h>
 #include <DualMAX14870MotorShield.h>
 #include <Servo.h>
+#include <Adafruit_BNO055.h>
 
 Pixy2 pixy;
 DualMAX14870MotorShield motors;
 Servo shooter;
+Adafruit_BNO055 imu = Adafruit_BNO055(55); //IMU setup
 
 enum State {
   SPIN_TO_FIND_PUCK,
@@ -25,6 +27,13 @@ void setup() {
   pixy.init();
   motors.flipM2(true);
   shooter.attach(9); // Attach servo to pin 9
+  //for IMU
+  if (!imu.begin()) {
+    Serial.print("oops");
+    while(1);
+  }
+  delay(500);
+  imu.setExtCrystalUse(true);
 }
 
 void loop() {
@@ -100,4 +109,13 @@ void shootPuck() {
   delay(500);
   shooter.write(90);  // Reset
   delay(500);
+}
+
+// reads yaw
+double readYaw() {
+  /* Get a new sensor event */ 
+  sensors_event_t event; 
+  imu.getEvent(&event);
+  double yaw = event.orientation.x; // consider subtracting setpoint
+  return yaw;
 }
