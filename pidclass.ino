@@ -26,7 +26,7 @@ class PID {
     ActFunc act;
     MeasFunc meas;
 
-    PID(float kp_, float ki_, float kd_) : kp(kp_), ki(ki_), kd(kd_){}
+    PID(float kp_, float ki_, float kd_, ActFunc actf, MeasFunc measf) : kp(kp_), ki(ki_), kd(kd_), act(actf), meas(measf){}
 
     void setControl(ActFunc func) {
       act = func;
