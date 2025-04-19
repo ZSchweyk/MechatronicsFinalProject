@@ -150,6 +150,7 @@ double calcShootAngleToGoal(Coordinate current, Coordinate goal, int goal_width,
 void aim(double shoot_angle) {
   // pivot cw or ccw until readYaw() is shoot_angle
   // this should be easy, just send commands to both motors to rotate
+  // something like this...
   // while (readYaw() != shoot_angle) {
   //    // rotate cw/ccw
   // }
