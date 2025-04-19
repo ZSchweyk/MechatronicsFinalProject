@@ -24,6 +24,7 @@ const int GOAL_SIGNATURE = 2;   // Green
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(115200);
   pixy.init();
   motors.flipM2(true);
   shooter.attach(9); // Attach servo to pin 9
@@ -118,4 +119,34 @@ double readYaw() {
   imu.getEvent(&event);
   double yaw = event.orientation.x; // consider subtracting setpoint
   return yaw;
+}
+
+//ZigBee check coordinates 
+void getZigBeeCoords(int* x_int, int* y_int, int* match_byte_int){
+  // Send data from the serial monitor to Xbee module
+  Serial1.print('?');
+  String data = "";
+  int count = 0;
+  if(!Serial1.available()){
+    Serial.println("error ZigBee");
+  }
+  // Receive data from the Xbee module and print to serial monitor
+  while (Serial1.available() && count < 14)
+  {
+    char incoming = Serial1.read();
+    data += incoming;
+    count++;
+    //Serial.print(incoming);
+    delay(20);
+  }
+  if(count == 14) { // this is a dumb redundancy check
+    String x = data.substring(7,10);
+    *x_int = x.toInt();
+    //Serial.println("X: " + x);
+    String y = data.substring(11);
+    *y_int = y.toInt();
+    //Serial.println("Y: " + y);
+    String match_byte = data.substring(0, 1);
+    *match_byte_int = match_byte.toInt();
+  }
 }
