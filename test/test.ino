@@ -50,7 +50,7 @@ void loop() {
 
 void drive_straight() {
   motors.setM1Speed(125);
-  motors.setM2Speed(125);
+  motors.setM2Speed(-125);
 }
 
 // Converts radians to degrees
