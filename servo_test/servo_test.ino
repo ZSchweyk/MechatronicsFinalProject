@@ -1,4 +1,4 @@
-#include <Servo.h>
+/* #include <Servo.h>
 
 Servo servo;
 const int angleIncrement = 10;  // Degrees to move per space press
@@ -37,6 +37,8 @@ void loop() {
   delay(2000);
   servo.write(180);
   delay(2000);
+  servo.detach();  // This releases the servo motor
+  while (1) {}
 
   // servo.write(0);
   // for (int angle = 10; angle <= 180; angle += 10) {
@@ -45,4 +47,75 @@ void loop() {
   // }
   
   
+} */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#include <Servo.h>
+
+Servo myServo;
+int currentAngle = 90;
+const int servoPin = 9;
+
+void setup() {
+  Serial.begin(9600);
+  myServo.attach(servoPin);
+  myServo.write(currentAngle);
+  delay(2000);
+  Serial.println("Space: +10° | r: release torque | a: reattach");
+  myServo.write(90);
+  delay(2000);
+  myServo.write(0);
+  delay(2000);
+  myServo.write(currentAngle);
 }
+
+void loop() {
+  if (Serial.available() > 0) {
+    char incomingChar = Serial.read();
+    Serial.print("Character is "); Serial.println(incomingChar);
+    
+    if (incomingChar == ' ') {
+      currentAngle += 10;
+      if (currentAngle > 180) currentAngle = 180;
+      myServo.write(currentAngle);
+      delay(2000);
+      Serial.print("Position: ");
+      Serial.print(currentAngle);
+      Serial.println("°");
+    }
+    else if (incomingChar == 'r') {
+      myServo.detach();
+      delay(1000); // Allow time for the servo to free-wheel
+      digitalWrite(servoPin, LOW);  // After detaching
+      Serial.println("Torque released - servo moves freely");
+    }
+    else if (incomingChar == 'a') {
+      myServo.attach(servoPin);
+      Serial.println("Servo reattached");
+    }
+  }
+}
+
+
+
+
+
+
+
+
+
