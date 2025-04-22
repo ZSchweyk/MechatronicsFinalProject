@@ -1,11 +1,11 @@
-#include <Pixy2.h>
+// #include <Pixy2.h>
 #include <DualMAX14870MotorShield.h>
 #include <Servo.h>
 #include <Adafruit_BNO055.h>
 #include <math.h>
 
-Pixy2 pixy;
-DualMAX14870MotorShield motors;
+// Pixy2 pixy;
+// DualMAX14870MotorShield motors;
 Servo shooter;
 Adafruit_BNO055 imu_board = Adafruit_BNO055(55); //IMU setup
 
@@ -16,14 +16,15 @@ struct Coordinate {
 
 const struct Coordinate GOAL_CENTER_COORD = {150, 500}; // TODO: I'm pretty sure the zigbee returns x-y coordinates in cm. Fill these in appropriately
 const int GOAL_WIDTH = 100; // in cm - TODO: Change this accordingly
+const double SHOOTER_OFFSET_FROM_IMU = 5; // say 5cm for now...
 
 
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200);
-  pixy.init();
-  motors.enableDrivers();
-  // motors.flipM2(true);
+  // pixy.init();
+  // motors.enableDrivers();
+  // // motors.flipM2(true);
   shooter.attach(9); // Attach servo to pin 9
   //for IMU
   Serial.println("Setup begin");
@@ -49,8 +50,8 @@ void loop() {
 }
 
 void drive_straight() {
-  motors.setM1Speed(125);
-  motors.setM2Speed(-125);
+  // motors.setM1Speed(125);
+  // motors.setM2Speed(-125);
 }
 
 // Converts radians to degrees
@@ -93,6 +94,6 @@ double readYaw() {
   /* Get a new sensor event */ 
   sensors_event_t event; 
   imu_board.getEvent(&event);
-  double yaw = event.orientation.x; // consider subtracting setpoint
-  return yaw;
+  double yaw = event.orientation.x;
+  return yaw <= 179 ? yaw : yaw-360; // map -358, -359, 0, 1, 2 to -2, -1, 0, 1, 2 -> [-180, 179]
 }
