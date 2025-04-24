@@ -1,5 +1,5 @@
 typedef void (*ActFunc) (float ctrl);
-typedef void (*MeasFunc) ();
+typedef float (*MeasFunc) ();
 
 void setup() {
 

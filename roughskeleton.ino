@@ -154,6 +154,9 @@ void aim(double shoot_angle) {
   // while (readYaw() != shoot_angle) {
   //    // rotate cw/ccw
   // }
+
+  
+
 }
 
 // reads yaw
