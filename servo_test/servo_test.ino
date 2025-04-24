@@ -82,6 +82,7 @@ void setup() {
   myServo.write(0);
   delay(2000);
   myServo.write(currentAngle);
+  pinMode(13, OUTPUT);
 }
 
 void loop() {
@@ -107,6 +108,12 @@ void loop() {
     else if (incomingChar == 'a') {
       myServo.attach(servoPin);
       Serial.println("Servo reattached");
+    } else if (incomingChar == 'h') {
+      digitalWrite(13, HIGH);
+      Serial.println("Gate activated");
+    } else if (incomingChar == 'l') {
+      digitalWrite(13, LOW);
+      Serial.println("Gate deactivated");
     }
   }
 }
