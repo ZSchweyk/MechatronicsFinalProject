@@ -5,8 +5,9 @@
 #include <math.h>
 
 Pixy2 pixy;
+Servo wind_servo;
+Servo release_servo;
 DualMAX14870MotorShield motors;
-Servo shooter;
 Adafruit_BNO055 imu = Adafruit_BNO055(55); //IMU setup
 
 enum State {
@@ -36,7 +37,8 @@ void setup() {
   Serial1.begin(115200);
   pixy.init();
   motors.flipM2(true);
-  shooter.attach(9); // Attach servo to pin 9
+  wind_servo.attach(9);
+  release_servo.attach(10);
   //for IMU
   if (!imu.begin()) {
     Serial.print("oops");

@@ -20,7 +20,7 @@ State currentState = MOVE_FORWARD;
 
 int signature;
 int dist_threshold = 10;
-int x_cord;
+i6nt x_cord;
 
 int signal = 13;
 float distance;
