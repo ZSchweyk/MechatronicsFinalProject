@@ -85,6 +85,15 @@ void loop() {
   }
 }
 
+int index(Pixy2* pixy, int colorindex) {
+  for (int i = 0; i < pixy->ccc.numBlocks; i++) {
+    if (pixy->ccc.blocks[i].m_signature == colorindex) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 void spin() {
   motors.enableDrivers();
   motors.setM1Speed(100);
