@@ -8,7 +8,9 @@ Pixy2 pixy;
 Servo wind_servo;
 Servo release_servo;
 DualMAX14870MotorShield motors;
-Adafruit_BNO055 imu = Adafruit_BNO055(55); //IMU setup
+Adafruit_BNO055 imu_board = Adafruit_BNO055(55); //IMU setup
+
+
 
 enum State {
   SPIN_TO_FIND_PUCK,
@@ -20,10 +22,13 @@ enum State {
 struct Coordinate {
   int x; // cm
   int y; // cm
-}
+};
 
 const Coordinate GOAL_CENTER_COORD = {150, 500}; // TODO: I'm pretty sure the zigbee returns x-y coordinates in cm. Fill these in appropriately
 const int GOAL_WIDTH = 100; // in cm - TODO: Change this accordingly
+const double SHOOTER_OFFSET_FROM_IMU = 5; // say 5cm for now...
+const int straight_imu_angle = 0;
+
 
 State currentState = SPIN_TO_FIND_PUCK;
 unsigned long lastSeenTime = 0;
@@ -40,15 +45,20 @@ void setup() {
   wind_servo.attach(9);
   release_servo.attach(10);
   //for IMU
-  if (!imu.begin()) {
-    Serial.print("oops");
+  if (!imu_board.begin()) {
+    Serial.print("IMU setup failed");
     while(1);
   }
   delay(500);
-  imu.setExtCrystalUse(true);
+  imu_board.setExtCrystalUse(true);
+  Serial.println("IMU setup successful");
 }
 
 void loop() {
+  double yaw = readYaw();
+  Serial.println(yaw);
+
+  return;
   pixy.ccc.getBlocks();
 
   switch (currentState) {
@@ -126,9 +136,9 @@ void trackPuck(int x) {
 
 void shootPuck() {
   Serial.println("Shooting!");
-  shooter.write(0);   // Adjust angle for shooting
+  wind_servo.write(0);   // Adjust angle for shooting
   delay(500);
-  shooter.write(90);  // Reset
+  wind_servo.write(90);  // Reset
   delay(500);
 }
 
@@ -174,9 +184,9 @@ void aim(double shoot_angle) {
 double readYaw() {
   /* Get a new sensor event */ 
   sensors_event_t event; 
-  imu.getEvent(&event);
-  double yaw = event.orientation.x; // consider subtracting setpoint
-  return yaw;
+  imu_board.getEvent(&event);
+  double yaw = event.orientation.x; // think about how to include straight_imu_angle
+  return yaw <= 179 ? yaw : yaw-360; // map -358, -359, 0, 1, 2 to -2, -1, 0, 1, 2 -> [-180, 179]
 }
 
 //ZigBee check coordinates 
