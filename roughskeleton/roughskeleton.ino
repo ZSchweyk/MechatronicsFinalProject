@@ -33,15 +33,19 @@ const unsigned long puckLostTimeout = 2000;
 const int PUCK_SIGNATURE = 1;   // Orange
 const int GOAL_SIGNATURE = 2;   // Green
 
-const int minspeed = 100;
+const int minspeed = 130;
+
+bool winded = false;
 
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200);
   pixy.init();
   motors.flipM2(true);
-  // wind_servo.attach(9);
-  // release_servo.attach(10);
+  wind_servo.attach(9);
+  wind_servo.write(0);
+  release_servo.attach(10);
+  release_servo.write(0);
   // //for IMU
   // if (!imu.begin()) {
   //   Serial.print("oops");
@@ -76,14 +80,16 @@ void loop() {
       spinTowardsPuck();
       pixy.ccc.getBlocks();
       if (index(PUCK_SIGNATURE) >= 0) {
-        currentState = FIND_GOAL;
+        currentState = APPROACH_PUCK;
       } else {
         currentState = SPIN_TO_FIND_PUCK;
       }
 
       break;
     case APPROACH_PUCK:
-      
+      trackPuck();
+      pixy.ccc.getBlocks();
+      currentState = SHOOT;
     case FIND_GOAL:
 
       // spin();
@@ -135,11 +141,11 @@ void spinTowardsPuck() {
 
   pixy.ccc.getBlocks();
 
-  int target = 145;
+  int target = 90;
 
   double thresh = 20;
 
-  double kp = 1.0;
+  double kp = 0.5;
   double ki = 0;
   double kd = 0;
 
@@ -156,7 +162,6 @@ void spinTowardsPuck() {
   long dt = 15; //ms
 
   while (index(PUCK_SIGNATURE) >= 0 && abs(error) > thresh) {
-    Serial.println(error);
     double newerror = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
     integral += dt * newerror;
     deriv = (newerror - error) / dt;
@@ -170,30 +175,70 @@ void spinTowardsPuck() {
   stop();
 }
 
-void trackPuck(int x) {
-  int center = 158;
-  int tolerance = 20;
+void trackPuck() {
+  pixy.ccc.getBlocks();
 
-  if (x < center - tolerance) {
-    motors.setM1Speed(-minspeed);
-    motors.setM2Speed(minspeed);  // Turn left
-  } else if (x > center + tolerance) {
-    motors.setM1Speed(minspeed);
-    motors.setM2Speed(-minspeed);   // Turn right
-  } else {
+  int target = 170;
+
+  double thresh = 20;
+  double ythresh = 20;
+
+  double kp = 0.05;
+  double ki = 0;
+  double kd = 0;
+
+  double integral = 0;
+
+  double deriv = 0;
+
+  if (index(PUCK_SIGNATURE) < 0) {
     stop();
-    // motors.setM1Speed(minspeed);
-    // motors.setM2Speed(minspeed); // Move forward
+    return;
   }
+  double error = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
 
+  long dt = 15; //ms
+
+  while (index(PUCK_SIGNATURE) >= 0 && pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_y > ythresh) {
+    double newerror = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
+    integral += dt * newerror;
+    deriv = (newerror - error) / dt;
+    double ctrlsig = kp * newerror + ki * integral - kd * deriv;
+    if (ctrlsig < 0) {
+      motors.setM1Speed(-1 * minspeed + ctrlsig);
+      motors.setM2Speed(-1 * minspeed);
+    } else {
+      motors.setM1Speed(-1 * minspeed);
+      motors.setM2Speed(-1 * minspeed - ctrlsig);
+    }
+    
+    Serial.println(ctrlsig);
+    error = newerror;
+    delay(dt);
+    pixy.ccc.getBlocks();
+  }
+  stop();
+
+}
+
+void wind() {
+  release_servo.write(90);
+  delay(500);
+  wind_servo.write(180);   // Adjust angle for shooting
+  delay(500);
+  release_servo.write(180);  // Reset
+  delay(500);
+  wind_servo.write(0);
+
+  winded = true;
 }
 
 void shootPuck() {
   Serial.println("Shooting!");
-  // shooter.write(0);   // Adjust angle for shooting
-  delay(500);
-  // shooter.write(90);  // Reset
-  delay(500);
+  if (winded) {
+    release_servo.write(90);
+    winded = false;
+  }
 }
 
 // Converts radians to degrees
