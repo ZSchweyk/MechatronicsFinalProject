@@ -1,0 +1,825 @@
+/*
+ * Hockey Robot - Phase 6: Puck Shooting with Left-Side Shuttling and Goal-Oriented Shooting
+ * 
+ * This code builds on previous phases by adding intelligent shooting decision logic:
+ * 1. Maintain orientation control
+ * 2. Detect an orange puck (signature 1)
+ * 3. Approach and follow the puck when detected
+ * 4. Return to orientation maintenance when puck is not visible
+ * 5. Use configurable search speed when searching for the puck
+ * 6. When ready to shoot, check if in front half of initialization orientation
+ *    - If yes: shoot directly
+ *    - If no: turn LEFT to shuttle the puck using the left-mounted arm
+ * 7. NEW: During shuttling, when facing close to the initial orientation:
+ *    - Drive straight forward for a short duration
+ *    - Then activate the shooter
+ */
+
+#include <Arduino.h>
+#include <DualMAX14870MotorShield.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
+#include <Pixy2.h>  // Include Pixy2 library for puck detection
+#include <Servo.h>  // Include Servo library for shooter
+
+// Create objects for components
+DualMAX14870MotorShield motors;
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28); // 0x28 is I2C address
+Pixy2 pixy;  // Create Pixy2 object
+Servo shooter;  // Create servo object for shooter
+Servo shuttleArm;  // Create servo object for shuttle arm
+
+// Serial communication settings
+#define USB_BAUD 115200
+
+// Motor control variables
+const int MAX_TURN_SPEED = 400;  // Maximum speed for rotation correction
+const int MIN_TURN_SPEED = 150;  // Minimum speed for rotation
+const int MAX_FORWARD_SPEED = 300; // Maximum speed for forward movement
+int BASE_SPEED = 0;              // Variable forward speed for Phase 2
+const long interval = 500;
+// Search speed configuration
+const int SEARCH_SPEED = 150;    // Search rotation speed
+unsigned long previousMillis = 0;
+// Shooter servo configuration
+const int SERVO_PIN = 3;         // Digital pin for shooter servo
+const int SERVO_HOLD = 90;       // Servo position to hold shooter (default)
+const int SERVO_RELEASE = 0;     // Servo position to release shooter
+
+// Shuttle arm servo configuration
+const int SHUTTLE_ARM_PIN = 5;   // Digital pin for shuttle arm servo
+const int ARM_EXTENDED = 180;    // Position for extended arm
+const int ARM_RETRACTED = 0;     // Position for retracted arm
+
+// PID constants for orientation correction
+double Kp = 1.0;               // Proportional gain
+double Ki = 0.01;              // Integral gain
+double Kd = 0.1;               // Derivative gain
+
+// PID constants for puck tracking
+double Kp_track = 1.5;         // Proportional gain for puck tracking
+double Kd_track = 0.3;         // Derivative gain for puck tracking
+
+// Orientation variables
+double setpoint_yaw = 0.0;     // Target heading (will be set in setup)
+double current_yaw = 0.0;      // Current heading from IMU
+double error = 0.0;            // Difference between setpoint and input
+double last_error = 0.0;       // Previous error for derivative calculation
+double integral = 0.0;         // Accumulated error for integral term
+double derivative = 0.0;       // Rate of change of error
+const double ERROR_THRESHOLD = 1.0; // Error threshold in degrees
+
+// Shuttling variables
+const int SHUTTLE_TURN_SPEED = 200; // Speed to use when shuttling puck with the static left-side arm
+const unsigned long SHUTTLE_DURATION = 10000; // How long to shuttle (ms)
+const double GOAL_ANGLE_THRESHOLD = 20.0; // Threshold in degrees to determine if facing goal
+const int PRE_SHUTTLE_SPEED = 200; // Speed to use for the pre-shuttle forward movement
+const unsigned long PRE_SHUTTLE_DURATION = 300; // Duration of pre-shuttle forward movement (ms) - TUNABLE
+
+// NEW: Goal shooting variables
+const int GOAL_APPROACH_SPEED = 250; // Speed to use for the straight forward movement before shooting
+const unsigned long GOAL_APPROACH_DURATION = 800; // Duration of straight movement in ms - TUNABLE
+
+// Puck detection variables
+const uint8_t PUCK_SIGNATURE = 1;  // Orange puck signature
+int puck_x = 0;              // X position of puck in Pixy's field of view
+int puck_y = 0;              // Y position of puck in Pixy's field of view
+int puck_width = 0;          // Width of puck in Pixy's field of view
+int last_puck_x = 0;         // Previous X position for derivative calculation
+boolean puck_visible = false;  // Whether puck is currently visible
+unsigned long last_detection = 0; // Time of last puck detection
+
+// Robot state - Finite State Machine
+enum RobotState {
+  START_SIGNAL, 
+  ORIENTATION_MAINTAIN,   // Maintain orientation, no puck visible
+  PUCK_TRACKING,          // Track and follow puck
+  SHOOTING,               // Puck disappeared while moving forward (shooting)
+  SEARCHING,              // Puck lost while rotating (search mode)
+  PRE_SHUTTLING,          // Brief forward movement before shuttling
+  SHUTTLING,              // Puck ready for shuttle (not in front half)
+  GOAL_APPROACH           // NEW: Straight forward movement before shooting after shuttle
+};
+RobotState currentState = START_SIGNAL;
+
+// Control timing
+unsigned long lastTime = 0;
+const unsigned long REFRESH_RATE = 10;         // Update time in milliseconds
+const unsigned long SHOOTING_DURATION = 1500;  // How long to continue forward after losing puck (ms)
+
+// State variables
+unsigned long stateStartTime = 0;      // When the current state was entered
+int searchDirection = 1;               // Direction to search (1=clockwise, -1=counterclockwise)
+
+// Function to read the current yaw from IMU
+double readYawInput() {
+  sensors_event_t event;
+  bno.getEvent(&event);
+  
+  // Get the x-axis orientation (yaw)
+  double yaw = event.orientation.x;
+  
+  // Convert to -180 to +180 range for easier calculations
+  if (yaw > 180) {
+    yaw -= 360;
+  }
+  
+  return yaw;
+}
+
+// Function to check if current orientation is in the front half
+// relative to the initial orientation
+bool isInFrontHalf() {
+  double current = readYawInput();
+  double diff = abs(current - setpoint_yaw);
+  
+  // Handle angle wrap-around
+  if (diff > 180) {
+    diff = 360 - diff;
+  }
+  
+  // If difference is less than 90 degrees, we're in the front half
+  return (diff <= 90);
+}
+
+bool isFacingGoal() {
+  double current = readYawInput();
+  
+  // Calculate target angle: 10 degrees to the left of initial orientation
+  double targetAngle = setpoint_yaw - 7.0;  // Subtract for counter-clockwise (left)
+  
+  // Handle angle wrap-around for target angle
+  if (targetAngle < -180.0) {
+    targetAngle += 360.0;
+  }
+  
+  // Calculate difference between current orientation and target angle
+  double diff = abs(current - targetAngle);
+  
+  // Handle angle wrap-around for difference calculation
+  if (diff > 180.0) {
+    diff = 360.0 - diff;
+  }
+  
+  // Check if within +/- 3 degrees of the target angle
+  const double GOAL_THRESHOLD = 3.0;  // +/- 3 degrees tolerance
+  
+  // Print debug information
+  Serial.print("GOAL CHECK | Current: ");
+  Serial.print(current, 1);
+  Serial.print("° | Target: ");
+  Serial.print(targetAngle, 1);
+  Serial.print("° | Diff: ");
+  Serial.print(diff, 1);
+  Serial.print("° | Threshold: ");
+  Serial.print(GOAL_THRESHOLD);
+  Serial.print(" | Facing Goal: ");
+  Serial.println(diff <= GOAL_THRESHOLD ? "YES" : "NO");
+  
+  // Consider "facing goal" if within threshold of target angle
+  return (diff <= GOAL_THRESHOLD);
+}
+
+// Function to stop motors
+void stopMotors() {
+  motors.setM1Speed(0);
+  motors.setM2Speed(0);
+  Serial.println("Motors stopped");
+}
+
+// Function to detect puck using Pixy2
+void detectPuck() {
+  // Get blocks from Pixy
+  pixy.ccc.getBlocks();
+  
+  // Check if any blocks detected
+  bool previously_visible = puck_visible;
+  puck_visible = false;
+  
+  if (pixy.ccc.numBlocks) {
+    // Look for the largest block with our puck signature
+    int largest_area = 0;
+    int largest_index = -1;
+    
+    for (int i = 0; i < pixy.ccc.numBlocks; i++) {
+      if (pixy.ccc.blocks[i].m_signature == PUCK_SIGNATURE) {
+        int block_area = pixy.ccc.blocks[i].m_width * pixy.ccc.blocks[i].m_height;
+        if (block_area > largest_area) {
+          largest_area = block_area;
+          largest_index = i;
+        }
+      }
+    }
+    
+    // If we found a block with our signature
+    if (largest_index >= 0) {
+      // Store the last detection position
+      last_puck_x = puck_x;
+      
+      // Update puck information
+      puck_x = pixy.ccc.blocks[largest_index].m_x;
+      puck_y = pixy.ccc.blocks[largest_index].m_y;
+      puck_width = pixy.ccc.blocks[largest_index].m_width;
+      puck_visible = true;
+      last_detection = millis();
+      
+      // Print puck information
+      Serial.print("Puck detected! X: ");
+      Serial.print(puck_x);
+      Serial.print(", Y: ");
+      Serial.print(puck_y);
+      Serial.print(", Width: ");
+      Serial.println(puck_width);
+      
+      // Check if we were in SEARCHING state and found the puck
+      if (currentState == SEARCHING) {
+        Serial.println("Puck found while searching! Switching to tracking mode");
+        currentState = PUCK_TRACKING;
+        stateStartTime = millis();
+      }
+      // Check if we need to transition from ORIENTATION_MAINTAIN to TRACKING
+      else if (currentState == ORIENTATION_MAINTAIN) {
+        Serial.println("Puck detected! Switching to tracking mode");
+        currentState = PUCK_TRACKING;
+        stateStartTime = millis();
+      }
+    }
+  }
+  
+  // If puck was not detected in this frame
+  if (!puck_visible) {
+    // Check what state we're in to determine appropriate action
+    if (previously_visible && currentState == PUCK_TRACKING) {
+      // We just lost sight of the puck while tracking it
+      
+      // Calculate if we were moving forward based on recent motor speeds
+      // This helps determine if we lost the puck because it's under the robot (shooting)
+      // or because we rotated away from it (searching)
+      
+      // Check the y position - if it was high (near bottom of frame), 
+      // we likely lost it because it's under the robot
+      if (puck_y > (pixy.frameHeight * 0.7)) {
+        // Puck was near the bottom of the frame - likely under the robot now
+        
+        // Check if we're in the front half to decide between shooting and shuttling
+        if (isInFrontHalf()) {
+          Serial.println("Puck disappeared at bottom of frame in FRONT HALF! Switching to shooting mode");
+          currentState = SHOOTING;
+        } else {
+          Serial.println("Puck disappeared at bottom of frame NOT in FRONT HALF! Switching to pre-shuttling mode");
+          currentState = PRE_SHUTTLING;
+        }
+        stateStartTime = millis();
+      } else {
+        // Puck was not near bottom - we probably rotated away from it
+        Serial.println("Puck lost while tracking! Switching to search mode");
+        currentState = SEARCHING;
+        stateStartTime = millis();
+        
+        // Decide search direction based on last puck position
+        if (puck_x < pixy.frameWidth / 2) {
+          searchDirection = -1; // Turn counterclockwise if puck was on left
+        } else {
+          searchDirection = 1;  // Turn clockwise if puck was on right
+        }
+      }
+    }
+    else if (currentState == SHOOTING) {
+      // Already in shooting mode, check if time is up
+      if (millis() - stateStartTime > SHOOTING_DURATION) {
+        Serial.println("Shooting time elapsed! Switching to search mode");
+        currentState = SEARCHING;
+        stateStartTime = millis();
+        
+        // Pick a random search direction after shooting
+        searchDirection = (random(2) == 0) ? -1 : 1;
+      }
+    }
+    else if (currentState == PRE_SHUTTLING) {
+      // Check if pre-shuttling time is up
+      if (millis() - stateStartTime > PRE_SHUTTLE_DURATION) {
+        Serial.println("Pre-shuttling movement complete! Switching to shuttling mode");
+        currentState = SHUTTLING;
+        stateStartTime = millis();
+        
+        // Extend the shuttle arm when entering shuttling mode
+        shuttleArm.write(ARM_EXTENDED);
+      }
+    }
+    else if (currentState == SHUTTLING) {
+      // Check if shuttling time is up or if we need to transition to goal approach
+      if (isFacingGoal()) {
+        Serial.println("Facing goal during shuttling! Switching to goal approach");
+        currentState = GOAL_APPROACH;
+        stateStartTime = millis();
+        return;
+      }
+      
+      if (millis() - stateStartTime > SHUTTLE_DURATION) {
+        Serial.println("Shuttling time elapsed! Switching to search mode");
+        currentState = SEARCHING;
+        stateStartTime = millis();
+        
+        // Retract the shuttle arm after shuttling is complete
+        shuttleArm.write(ARM_RETRACTED);
+        
+        // Always search counter-clockwise after shuttling
+        searchDirection = -1;
+      }
+    }
+    else if (currentState == GOAL_APPROACH) {
+      // Check if goal approach time is up
+      if (millis() - stateStartTime > GOAL_APPROACH_DURATION) {
+        Serial.println("Goal approach complete! Switching to shooting mode");
+        currentState = SHOOTING;
+        stateStartTime = millis();
+        
+        // Retract the shuttle arm before shooting
+        shuttleArm.write(ARM_RETRACTED);
+      }
+    }
+    else if (currentState == SEARCHING) {
+      // In search mode, we continue searching indefinitely
+      // No timeout - will search until puck is found
+    }
+  }
+}
+
+// PID-controlled orientation maintenance/correction
+void applyOrientationControl() {
+  // Read current orientation
+  current_yaw = readYawInput();
+  
+  // Calculate error (-180 to +180 degrees)
+  error = setpoint_yaw - current_yaw;
+  
+  // Handle angle wrap-around
+  if (error > 180) {
+    error -= 360;
+  } else if (error < -180) {
+    error += 360;
+  }
+  
+  // Calculate time delta
+  unsigned long currentTime = millis();
+  double timeChange = (currentTime - lastTime) / 1000.0; // Convert to seconds
+  
+  // Calculate integral term with anti-windup
+  integral += error * timeChange;
+  
+  // Limit integral term to prevent windup
+  if (integral > 50) integral = 50;
+  if (integral < -50) integral = -50;
+  
+  // Calculate derivative term (rate of change of error)
+  derivative = (error - last_error) / timeChange;
+  
+  // Save current error for next iteration
+  last_error = error;
+  lastTime = currentTime;
+  
+  // Calculate PID output
+  double p_term = Kp * error;
+  double i_term = Ki * integral;
+  double d_term = Kd * derivative;
+  double pid_output = p_term + i_term + d_term;
+  
+  // Print debug information
+  Serial.print("ORIENT | Target: ");
+  Serial.print(setpoint_yaw, 1);
+  Serial.print("° | Current: ");
+  Serial.print(current_yaw, 1);
+  Serial.print("° | Error: ");
+  Serial.print(error, 1);
+  Serial.print("° | P:");
+  Serial.print(p_term, 1);
+  Serial.print(" I:");
+  Serial.print(i_term, 1);
+  Serial.print(" D:");
+  Serial.print(d_term, 1);
+  Serial.print(" | ");
+  
+  // Pure rotation without forward movement when in orientation mode
+  int leftSpeed, rightSpeed;
+  
+  if (pid_output > 0) {
+    // Need to turn clockwise
+    leftSpeed = pid_output;
+    rightSpeed = -pid_output;
+  } else {
+    // Need to turn counterclockwise
+    leftSpeed = pid_output;
+    rightSpeed = -pid_output;
+  }
+  
+  // Ensure minimum turn speed to overcome friction when error is significant
+  if (abs(error) > ERROR_THRESHOLD) {
+    if (leftSpeed > 0 && leftSpeed < MIN_TURN_SPEED) leftSpeed = MIN_TURN_SPEED;
+    if (leftSpeed < 0 && leftSpeed > -MIN_TURN_SPEED) leftSpeed = -MIN_TURN_SPEED;
+    if (rightSpeed > 0 && rightSpeed < MIN_TURN_SPEED) rightSpeed = MIN_TURN_SPEED;
+    if (rightSpeed < 0 && rightSpeed > -MIN_TURN_SPEED) rightSpeed = -MIN_TURN_SPEED;
+  } else {
+    // If error is very small, stop motors to avoid jitter
+    leftSpeed = 0;
+    rightSpeed = 0;
+  }
+  
+  // Ensure speeds are within valid range
+  leftSpeed = constrain(leftSpeed, -MAX_TURN_SPEED, MAX_TURN_SPEED);
+  rightSpeed = constrain(rightSpeed, -MAX_TURN_SPEED, MAX_TURN_SPEED);
+  
+  // Set motor speeds
+  motors.setM1Speed(-leftSpeed);
+  motors.setM2Speed(rightSpeed);
+  
+  // Print motor speeds
+  Serial.print("Left: ");
+  Serial.print(leftSpeed);
+  Serial.print(" Right: ");
+  Serial.println(rightSpeed);
+}
+
+// Function to track and follow puck
+void trackPuck() {
+  // Calculate puck position error
+  // Pixy's x-coordinate range is 0-315, with center at 158
+  int center_x = pixy.frameWidth / 2;
+  int track_error = center_x - puck_x;
+  
+  // Calculate puck tracking derivative term
+  int track_derivative = track_error - (center_x - last_puck_x);
+  
+  // Calculate proportional and derivative terms
+  double p_term_track = Kp_track * track_error;
+  double d_term_track = Kd_track * track_derivative;
+  
+  // Calculate turning adjustment
+  double turn_adjustment = p_term_track + d_term_track;
+  
+  // Calculate distance-based speed
+  // Further away = faster, closer = slower
+  int distance_factor = map(puck_y, 0, pixy.frameHeight, MAX_FORWARD_SPEED, MAX_FORWARD_SPEED/3);
+  
+  // Also slow down as puck gets wider (closer)
+  int width_factor = map(puck_width, 10, 100, MAX_FORWARD_SPEED, MAX_FORWARD_SPEED/4);
+  width_factor = constrain(width_factor, 0, MAX_FORWARD_SPEED);
+  
+  // Use the more conservative of the two speed factors
+  BASE_SPEED = min(distance_factor, width_factor);
+  
+  // Calculate left and right motor speeds
+  int leftSpeed = BASE_SPEED - turn_adjustment;
+  int rightSpeed = BASE_SPEED + turn_adjustment;
+  
+  // Ensure speeds are within valid range
+  leftSpeed = constrain(leftSpeed, -MAX_FORWARD_SPEED, MAX_FORWARD_SPEED);
+  rightSpeed = constrain(rightSpeed, -MAX_FORWARD_SPEED, MAX_FORWARD_SPEED);
+  
+  // Print debug information
+  Serial.print("TRACK | Puck X: ");
+  Serial.print(puck_x);
+  Serial.print(" | Error: ");
+  Serial.print(track_error);
+  Serial.print(" | Turn: ");
+  Serial.print(turn_adjustment, 1);
+  Serial.print(" | Speed: ");
+  Serial.print(BASE_SPEED);
+  Serial.print(" | ");
+  
+  // Set motor speeds (note: might need to flip signs based on your motor configuration)
+  motors.setM1Speed(-leftSpeed);
+  motors.setM2Speed(rightSpeed);
+  
+  // Print motor speeds
+  Serial.print("Left: ");
+  Serial.print(leftSpeed);
+  Serial.print(" Right: ");
+  Serial.println(rightSpeed);
+}
+
+// Function to wait for IMU calibration
+void waitForCalibration() {
+  Serial.println("Calibrating IMU... Please rotate the robot in place to calibrate gyro.");
+  
+  uint8_t system_cal, gyro_cal, accel_cal, mag_cal;
+  
+  digitalWrite(LED_BUILTIN, HIGH); // Turn on LED during calibration
+  
+  // Wait for gyro to be calibrated (we only need gyro for yaw)
+  int calibrationAttempts = 0;
+  do {
+    bno.getCalibration(&system_cal, &gyro_cal, &accel_cal, &mag_cal);
+    
+    Serial.print("CALIBRATION: Sys=");
+    Serial.print(system_cal);
+    Serial.print(" Gyro=");
+    Serial.print(gyro_cal);
+    Serial.print(" Accel=");
+    Serial.print(accel_cal);
+    Serial.print(" Mag=");
+    Serial.println(mag_cal);
+    
+    // Flash LED to indicate calibration in progress
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    
+    delay(500);
+    calibrationAttempts++;
+    
+    // After 20 attempts (10 seconds), proceed if gyro is at least partially calibrated
+    if (calibrationAttempts > 20 && gyro_cal >= 1) {
+      Serial.println("Proceeding with partial gyro calibration.");
+      break;
+    }
+    
+  } while (gyro_cal < 3); // Only checking for gyro calibration
+  
+  digitalWrite(LED_BUILTIN, LOW); // Turn off LED when calibrated
+  Serial.println("Gyro calibration complete!");
+}
+
+// Function to execute pre-shuttle behavior (brief forward movement)
+void executePreShuttle() {
+  // Calculate elapsed time in pre-shuttle state
+  unsigned long elapsedTime = millis() - stateStartTime;
+  
+  // Move forward at the pre-shuttle speed to position the puck better
+  motors.setM1Speed(-PRE_SHUTTLE_SPEED);
+  motors.setM2Speed(PRE_SHUTTLE_SPEED);
+  
+  // Print status
+  Serial.print("PRE-SHUTTLING | Time: ");
+  Serial.print(elapsedTime);
+  Serial.print("/");
+  Serial.print(PRE_SHUTTLE_DURATION);
+  Serial.print(" | Forward Speed: ");
+  Serial.println(PRE_SHUTTLE_SPEED);
+}
+
+// Function to execute shuttle behavior
+void executeShuttle() {
+  // Calculate elapsed time in shuttle state
+  unsigned long elapsedTime = millis() - stateStartTime;
+  
+  // Check if we're now facing the goal during shuttling
+  if (isFacingGoal()) {
+    // We're facing the goal, time to transition to goal approach
+    Serial.println("Facing goal during shuttling! Switching to goal approach");
+    currentState = GOAL_APPROACH;
+    stateStartTime = millis();
+    return;
+  }
+  
+  // For shuttling with a static left-side arm, we need to turn left (counter-clockwise)
+  // so the puck makes contact with the static arm on the left side
+  motors.setM1Speed(SHUTTLE_TURN_SPEED);
+  motors.setM2Speed(SHUTTLE_TURN_SPEED);
+  
+  // Print status
+  Serial.print("SHUTTLING | Time: ");
+  Serial.print(elapsedTime);
+  Serial.print("/");
+  Serial.print(SHUTTLE_DURATION);
+  Serial.print(" | Turn Speed: ");
+  Serial.print(SHUTTLE_TURN_SPEED);
+  Serial.print(" | Facing Goal: ");
+  Serial.print(isFacingGoal() ? "YES" : "NO");
+  Serial.print(" | Orientation: ");
+  Serial.println(readYawInput(), 1);
+}
+
+// NEW: Function to execute goal approach behavior (straight movement before shooting)
+void executeGoalApproach() {
+  // Calculate elapsed time in goal approach state
+  unsigned long elapsedTime = millis() - stateStartTime;
+  
+  // Move forward in a straight line at the goal approach speed
+  motors.setM1Speed(-GOAL_APPROACH_SPEED);
+  motors.setM2Speed(GOAL_APPROACH_SPEED);
+  
+  // Print status
+  Serial.print("GOAL APPROACH | Time: ");
+  Serial.print(elapsedTime);
+  Serial.print("/");
+  Serial.print(GOAL_APPROACH_DURATION);
+  Serial.print(" | Forward Speed: ");
+  Serial.print(GOAL_APPROACH_SPEED);
+  Serial.print(" | Orientation: ");
+  Serial.println(readYawInput(), 1);
+}
+
+// Function to execute shooting behavior
+void executeShoot() {
+  // Continue forward at full speed for a brief time
+  int shootSpeed = MAX_FORWARD_SPEED;
+  
+  // Set motor speeds for straight forward motion
+  motors.setM1Speed(-shootSpeed);
+  motors.setM2Speed(shootSpeed);
+  
+  // Trigger the shooter if we're within the first 100ms of the shooting state
+  if ((millis() - stateStartTime) < 100) {
+    // Activate the shooter by moving servo to release position
+    shooter.write(SERVO_RELEASE);
+    Serial.println("SHOOTER ACTIVATED!");
+  }
+  
+  // Reset the servo to hold position when shooting duration is almost complete
+  if ((millis() - stateStartTime) > (SHOOTING_DURATION - 100)) {
+    shooter.write(SERVO_HOLD);
+    Serial.println("Shooter reset to hold position");
+  }
+  
+  // Print status
+  Serial.print("SHOOTING | Time: ");
+  Serial.print((millis() - stateStartTime));
+  Serial.print("/");
+  Serial.print(SHOOTING_DURATION);
+  Serial.print(" | Speed: ");
+  Serial.print(shootSpeed);
+  Serial.print(" | Servo: ");
+  Serial.println(shooter.read() == SERVO_RELEASE ? "RELEASED" : "HOLDING");
+}
+
+// Function to search for the puck
+void searchForPuck() {
+  // Rotate in place to search for the puck using the configurable search speed
+  
+  // Set motor speeds for rotation in the search direction
+  if (searchDirection > 0) {
+    // Clockwise rotation
+    motors.setM1Speed(-SEARCH_SPEED);
+    motors.setM2Speed(-SEARCH_SPEED);
+  } else {
+    // Counter-clockwise rotation
+    motors.setM1Speed(SEARCH_SPEED);
+    motors.setM2Speed(SEARCH_SPEED);
+  }
+  
+  // Print status
+  Serial.print("SEARCHING | Time: ");
+  Serial.print((millis() - stateStartTime));
+  Serial.print(" | Speed: ");
+  Serial.print(SEARCH_SPEED);
+  Serial.print(" | Direction: ");
+  Serial.println(searchDirection > 0 ? "Clockwise" : "Counter-clockwise");
+}
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(USB_BAUD);
+  Serial.println("=== Hockey Robot - Phase 6: Puck Shooting with Left-Side Shuttling and Goal-Oriented Shooting ===");
+  
+  // Initialize LED for status
+  pinMode(LED_BUILTIN, OUTPUT);
+  
+  // Initialize motor drivers
+  motors.enableDrivers();
+  Serial.println("Motors initialized");
+  delay(100);
+  
+  // Initialize servo for shooter
+  shooter.attach(SERVO_PIN);
+  shooter.write(SERVO_HOLD);  // Set to holding position by default
+  Serial.println("Shooter servo initialized");
+  
+  // Initialize servo for shuttle arm
+  shuttleArm.attach(SHUTTLE_ARM_PIN);
+  shuttleArm.write(ARM_RETRACTED);  // Start with arm retracted
+  Serial.println("Shuttle arm initialized");
+  
+  delay(100);
+  
+  // Initialize IMU
+  if (!bno.begin()) {
+    Serial.println("ERROR: BNO055 IMU not detected!");
+    while (1) {} // Don't proceed if IMU not working
+  }
+  
+  // Use external crystal for better accuracy
+  bno.setExtCrystalUse(true);
+  Serial.println("IMU initialized");
+  
+  // Initialize Pixy2 camera
+  Serial.println("Initializing Pixy2...");
+  pixy.init();
+  // Set brightness if needed
+  pixy.setLamp(0, 0); // Turn off lamp initially
+  pixy.setCameraBrightness(80); // Set brightness (0-255)
+  Serial.println("Pixy2 initialized");
+  
+  // Wait for IMU calibration
+  waitForCalibration();
+  
+  // Set initial target orientation
+  setpoint_yaw = readYawInput();
+  Serial.print("Initial orientation set to: ");
+  Serial.print(setpoint_yaw, 1);
+  Serial.println(" degrees");
+  
+  // Initialize PID variables
+  last_error = 0;
+  integral = 0;
+  lastTime = millis();
+  
+  // Initialize random number generator for search direction
+  randomSeed(analogRead(0));
+  
+  Serial.println("=== Phase 6 Ready: Robot will track puck and shoot or shuttle based on orientation ===");
+  Serial.println("Front half threshold: +/- 90 degrees of initial orientation");
+  Serial.println("Goal-facing threshold: +/- " + String(GOAL_ANGLE_THRESHOLD) + " degrees of initial orientation");
+  Serial.println("Search speed set to: " + String(SEARCH_SPEED));
+  Serial.println("Pre-shuttle speed: " + String(PRE_SHUTTLE_SPEED) + ", duration: " + String(PRE_SHUTTLE_DURATION) + "ms");
+  Serial.println("Shuttle speed set to: " + String(SHUTTLE_TURN_SPEED));
+  Serial.println("Goal approach speed: " + String(GOAL_APPROACH_SPEED) + ", duration: " + String(GOAL_APPROACH_DURATION) + "ms");
+  
+  // Start in search mode
+  currentState = SEARCHING;
+  stateStartTime = millis();
+  // Pick random initial search direction
+  searchDirection = (random(2) == 0) ? -1 : 1;
+  Serial.println("Starting in search mode");
+}
+
+void loop() {
+  // Detect puck using Pixy2
+  detectPuck();
+  
+  // State machine for robot behavior
+  switch (currentState) {
+    case START_SIGNAL:
+       // Send data from the serial monitor to XBee module
+      if (millis() - previousMillis >= interval) {
+        previousMillis = millis();
+        Serial1.print('?');  // Send request to XBee
+        Serial.println("Sent data request");
+      }
+
+      // Receive data from the XBee module and parse coordinates
+      if (Serial1.available()) {
+        String receivedData = Serial1.readStringUntil('\n');  // Read until newline
+        receivedData.trim();                                  // Remove any leading/trailing whitespace
+
+        Serial.print("Received Data: ");
+        Serial.println(receivedData);
+
+        // Check if the received data is in the expected format
+        int firstComma = receivedData.indexOf(',');
+        if (firstComma != -1) {
+          String matchbyte = receivedData.substring(0, firstComma);
+
+          if (matchbyte == "1") {
+            currentState = ORIENTATION_MAINTAIN;
+          }
+  
+        } else {
+          Serial.println("Error parsing ZigBee data.");
+        }
+      }
+      
+      break;
+    case ORIENTATION_MAINTAIN:
+      // When no puck is visible, maintain orientation
+      applyOrientationControl();
+      break;
+      
+    case PUCK_TRACKING:
+      // When puck is visible, track and follow it
+      trackPuck();
+      break;
+      
+    case SHOOTING:
+      // When in front half, shoot the puck forward
+      executeShoot();
+      break;
+      
+    case PRE_SHUTTLING:
+      // Brief forward movement before shuttling
+      executePreShuttle();
+      break;
+      
+    case SHUTTLING:
+      // When not in front half, shuttle the puck using left turn
+      executeShuttle();
+      break;
+      
+    case GOAL_APPROACH:
+      // NEW: Straight forward movement before shooting after shuttle
+      executeGoalApproach();
+      break;
+      
+    case SEARCHING:
+      // When the puck is lost, search for it
+      searchForPuck();
+      break;
+  }
+  
+  // Check for serial commands (for manual tuning and debugging)
+  if (Serial.available()) {
+    // Add code here for processing serial commands if needed
+  }
+  
+  // Small delay for stability
+  delay(10);
+}
