@@ -51,20 +51,6 @@ void loop() {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #include <Servo.h>
 
 Servo myServo;

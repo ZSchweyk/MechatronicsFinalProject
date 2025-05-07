@@ -38,6 +38,10 @@ const int minspeed = 130;
 
 bool winded = false;
 
+int lastPuckX = 90;  // assume center (Pixy2 image width ~ 180)
+bool puckSeen = false;
+const int closeEnoughY = 20;  // Adjust based on your camera setup
+
 void setup() {
   Serial.begin(115200);
   Serial1.begin(115200);
@@ -58,35 +62,56 @@ void setup() {
 
 void loop() {
   motors.enableDrivers();
+  pixy.ccc.getBlocks();  // Always get the latest blocks
 
   switch (currentState) {
     case SPIN_TO_FIND_PUCK:
       motors.setM1Speed(minspeed);
       motors.setM2Speed(-minspeed);
-      pixy.ccc.getBlocks();
+
       if (index(PUCK_SIGNATURE) >= 0) {
+        lastPuckX = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x;
+        puckSeen = true;
         stop();
         currentState = APPROACH_PUCK;
       }
       break;
 
-    case AIM_PUCK:
-      spinTowardsPuck();
-      pixy.ccc.getBlocks();
+    case APPROACH_PUCK:
       if (index(PUCK_SIGNATURE) >= 0) {
-        currentState = APPROACH_PUCK;
+        lastPuckX = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x;
+        puckSeen = true;
+
+        int puckX = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x;
+        int puckY = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_y;
+
+        if (puckY <= closeEnoughY) {
+          stop();
+          currentState = FIND_GOAL;
+          break;
+        }
+
+        int error = puckX - 90;  // center is ~90
+        int turnSpeed = constrain(error * 0.5, -100, 100);
+
+        motors.setM1Speed(-minspeed + turnSpeed);
+        motors.setM2Speed(-minspeed - turnSpeed);
+
+      } else if (puckSeen) {
+        // Lost puck — turn back toward last seen x
+        int error = lastPuckX - 90;
+        int turnSpeed = constrain(error * 0.5, -100, 100);
+
+        motors.setM1Speed(turnSpeed);
+        motors.setM2Speed(-turnSpeed);
       } else {
+        // No memory, spin to search again
         currentState = SPIN_TO_FIND_PUCK;
       }
       break;
 
-    case APPROACH_PUCK:
-      trackPuck();
-      pixy.ccc.getBlocks();
-      currentState = SHOOT;
-      break;
-
     case FIND_GOAL:
+      // Logic for goal-seeking (e.g., align and shoot)
       break;
 
     case SHOOT: {
@@ -110,12 +135,6 @@ int index(int colorindex) {
   return -1;
 }
 
-void spin() {
-  motors.enableDrivers();
-  motors.setM1Speed(minspeed);
-  motors.setM2Speed(-minspeed);
-}
-
 void stop() {
   motors.setM1Speed(0);
   motors.setM2Speed(0);
@@ -125,75 +144,6 @@ void moveForwardBriefly() {
   motors.setM1Speed(-100);
   motors.setM2Speed(-100);
   delay(500);
-  stop();
-}
-
-void spinTowardsPuck() {
-  pixy.ccc.getBlocks();
-  int target = 90;
-  double thresh = 20;
-  double kp = 0.5;
-  double ki = 0;
-  double kd = 0;
-  double integral = 0;
-  double deriv = 0;
-
-  if (index(PUCK_SIGNATURE) < 0) {
-    stop();
-    return;
-  }
-  double error = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
-  long dt = 15;
-
-  while (index(PUCK_SIGNATURE) >= 0 && abs(error) > thresh) {
-    double newerror = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
-    integral += dt * newerror;
-    deriv = (newerror - error) / dt;
-    double ctrlsig = kp * newerror + ki * integral - kd * deriv;
-    motors.setM1Speed(ctrlsig);
-    motors.setM2Speed(-1 * ctrlsig);
-    error = newerror;
-    delay(dt);
-    pixy.ccc.getBlocks();
-  }
-  stop();
-}
-
-void trackPuck() {
-  pixy.ccc.getBlocks();
-  int target = 170;
-  double thresh = 20;
-  double ythresh = 20;
-  double kp = 0.05;
-  double ki = 0;
-  double kd = 0;
-  double integral = 0;
-  double deriv = 0;
-
-  if (index(PUCK_SIGNATURE) < 0) {
-    stop();
-    return;
-  }
-  double error = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
-  long dt = 15;
-
-  while (index(PUCK_SIGNATURE) >= 0 && pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_y > ythresh) {
-    double newerror = pixy.ccc.blocks[index(PUCK_SIGNATURE)].m_x - target;
-    integral += dt * newerror;
-    deriv = (newerror - error) / dt;
-    double ctrlsig = kp * newerror + ki * integral - kd * deriv;
-    if (ctrlsig < 0) {
-      motors.setM1Speed(-1 * minspeed + ctrlsig);
-      motors.setM2Speed(-1 * minspeed);
-    } else {
-      motors.setM1Speed(-1 * minspeed);
-      motors.setM2Speed(-1 * minspeed - ctrlsig);
-    }
-    Serial.println(ctrlsig);
-    error = newerror;
-    delay(dt);
-    pixy.ccc.getBlocks();
-  }
   stop();
 }
 
